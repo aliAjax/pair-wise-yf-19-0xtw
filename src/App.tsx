@@ -1,128 +1,206 @@
+import { useEffect, useMemo, useState } from "react";
 import "./styles.css";
+import { StoreProvider, useStore } from "./store";
+import type { ToastItem } from "./components/ui";
+import { ToastHost, makeToastApi } from "./components/ui";
+import { RegisterView } from "./views/RegisterView";
+import { QueueView } from "./views/QueueView";
+import { ReviewView } from "./views/ReviewView";
+import { LocalityView } from "./views/LocalityView";
+import { ShelfView } from "./views/ShelfView";
+import { DetailView } from "./views/DetailView";
+import { photoComplete, stageOf } from "./utils";
 
-const project = {
-  "sourceNo": 9,
-  "id": "hxyfront-62007",
-  "port": 62007,
-  "title": "植物标本馆入库",
-  "domain": "植物标本馆",
-  "prompt": "开发一个植物标本馆压制标本入库前端项目，工作人员可以录入采集号、物种名称、采集地点、海拔、生境描述、采集人、压制状态、鉴定状态和馆藏位置。页面需要有入库队列、鉴定状态筛选、采集地点信息卡、馆藏柜位记录和单份标本详情页。",
-  "palette": [
-    "#166534",
-    "#0f766e",
-    "#ca8a04"
-  ],
-  "metrics": [
-    "入库队列",
-    "待鉴定",
-    "已上柜",
-    "采集点"
-  ],
-  "filters": [
-    "待压制",
-    "待鉴定",
-    "已入库",
-    "需补照"
-  ],
-  "fields": [
-    "采集号",
-    "物种名称",
-    "采集地点",
-    "海拔",
-    "生境描述",
-    "馆藏位置"
-  ],
-  "records": [
-    [
-      "HX-240615-01",
-      "槭属待定",
-      "海拔1420m",
-      "待鉴定"
-    ],
-    [
-      "HX-240615-08",
-      "蕨类",
-      "阴湿沟谷",
-      "已压制"
-    ],
-    [
-      "HX-240616-03",
-      "菊科",
-      "柜位B-12-04",
-      "已入库"
-    ]
-  ]
-};
+type Tab = "queue" | "register" | "review" | "locality" | "shelf";
 
-function App() {
+const TABS: { key: Tab; label: string }[] = [
+  { key: "queue", label: "补照队列" },
+  { key: "register", label: "登记 / 压制" },
+  { key: "review", label: "鉴定筛选" },
+  { key: "locality", label: "地点信息卡" },
+  { key: "shelf", label: "柜位记录" },
+];
+
+const toast = makeToastApi();
+
+function parseHash():
+  | { name: "tab"; tab: Tab }
+  | { name: "detail"; id: string } {
+  const h = window.location.hash;
+  const m = h.match(/^#\/specimen\/([^/?]+)/);
+  if (m) return { name: "detail", id: decodeURIComponent(m[1]) };
+  const tab = (h.replace(/^#\/?/, "") || "queue") as Tab;
+  const valid = TABS.some((t) => t.key === tab);
+  return { name: "tab", tab: valid ? tab : "queue" };
+}
+
+function Workbench() {
+  const store = useStore();
+  const { specimens, ready, operator, setOperator } = store;
+  const [route, setRoute] = useState(parseHash());
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+
+  useEffect(() => {
+    toast.bind(setToasts);
+    const onHash = () => setRoute(parseHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  const goTab = (tab: Tab) => {
+    window.location.hash = `#/${tab}`;
+  };
+  const goDetail = (id: string) => {
+    window.location.hash = `#/specimen/${id}`;
+  };
+
+  const stats = useMemo(() => {
+    const c = { pressing: 0, queue: 0, review: 0, approved: 0, shelved: 0 };
+    for (const sp of specimens) {
+      const st = stageOf(sp);
+      if (st === "pressing") c.pressing += 1;
+      else if (st === "shelved") c.shelved += 1;
+      else if (st === "approved") c.approved += 1;
+      else {
+        c.queue += 1;
+        if (photoComplete(sp) && !sp.returns.some((r) => !r.resolved))
+          c.review += 1;
+      }
+    }
+    return c;
+  }, [specimens]);
+
+  if (!ready) {
+    return (
+      <div className="boot">
+        <div className="boot-card">🌿 正在打开本地标本数据库…</div>
+      </div>
+    );
+  }
+
   return (
-    <main className="app">
-      <section className="hero">
-        <p>{project.id} · 源提示词{project.sourceNo} · Port {project.port}</p>
-        <h1>{project.title}</h1>
-        <span>{project.prompt}</span>
-      </section>
+    <div className="app">
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-mark">🌿</span>
+          <div>
+            <h1>植物标本馆 · 补照工作台</h1>
+            <p>整株 / 标签 / 生境三类照片齐全，鉴定通过方可上柜</p>
+          </div>
+        </div>
+        <label className="operator">
+          <span>当前操作人</span>
+          <input
+            value={operator}
+            placeholder="填写姓名"
+            onChange={(e) => setOperator(e.target.value)}
+          />
+        </label>
+      </header>
 
       <section className="metrics">
-        {project.metrics.map((metric: string, index: number) => (
-          <article key={metric}>
-            <small>{metric}</small>
-            <strong>{[86, 14, 7, 32][index] ?? 12}</strong>
-          </article>
-        ))}
+        <Metric label="压制中" value={stats.pressing} tone="amber" />
+        <Metric label="补照队列" value={stats.queue} tone="blue" />
+        <Metric label="待鉴定" value={stats.review} tone="teal" />
+        <Metric label="待上柜" value={stats.approved} tone="green" />
+        <Metric label="已上柜" value={stats.shelved} tone="ink" />
       </section>
 
-      <section className="workspace">
-        <aside className="panel">
-          <h2>{project.domain}筛选</h2>
-          <div className="chips">
-            {project.filters.map((item: string) => (
-              <button key={item}>{item}</button>
-            ))}
-          </div>
-        </aside>
+      <nav className="tabs">
+        {TABS.map((t) => {
+          const active = route.name === "tab" && route.tab === t.key;
+          return (
+            <button
+              key={t.key}
+              className={active ? "tab tab-active" : "tab"}
+              onClick={() => goTab(t.key)}
+            >
+              {t.label}
+              {t.key === "queue" && stats.queue > 0 && (
+                <span className="tab-dot">{stats.queue}</span>
+              )}
+            </button>
+          );
+        })}
+      </nav>
 
-        <section className="panel form-panel">
-          <div className="heading">
-            <div>
-              <p>专业字段</p>
-              <h2>新增记录</h2>
-            </div>
-            <button className="primary">保存草稿</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
-        </section>
-      </section>
+      <main className="content">
+        {route.name === "detail" ? (
+          <DetailView
+            id={route.id}
+            operator={operator}
+            back={() => window.history.back()}
+          />
+        ) : route.tab === "register" ? (
+          <RegisterView operator={operator} goDetail={goDetail} />
+        ) : route.tab === "queue" ? (
+          <QueueView operator={operator} goDetail={goDetail} />
+        ) : route.tab === "review" ? (
+          <ReviewView
+            operator={operator}
+            goDetail={goDetail}
+            goShelf={() => goTab("shelf")}
+          />
+        ) : route.tab === "locality" ? (
+          <LocalityView goDetail={goDetail} />
+        ) : (
+          <ShelfView
+            operator={operator}
+            goDetail={goDetail}
+            notify={(text, kind) => toast.push(text, kind)}
+          />
+        )}
+      </main>
 
-      <section className="panel">
-        <div className="heading">
-          <div>
-            <p>历史记录</p>
-            <h2>近期工作台</h2>
-          </div>
-          <button>导出摘要</button>
-        </div>
-        <div className="records">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")}>
-              <b>{String(index + 1).padStart(2, "0")}</b>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
-    </main>
+      <footer className="foot">
+        所有记录与照片均保存在本机浏览器（IndexedDB），队列 / 鉴定 / 地点卡 /
+        柜位 / 详情页共用同一份数据，关闭重开可继续处理。
+        <button
+          className="foot-link"
+          onClick={async () => {
+            if (
+              window.confirm(
+                "重新写入内置演示数据？将把演示标本恢复为初始状态，不会产生重复记录（你登记的标本保留）。"
+              )
+            ) {
+              await store.loadSeed();
+              toast.push("演示数据已重置", "success");
+            }
+          }}
+        >
+          追加演示数据
+        </button>
+      </footer>
+
+      <ToastHost
+        toasts={toasts}
+        onDismiss={(id) => setToasts((t) => t.filter((x) => x.id !== id))}
+      />
+    </div>
   );
 }
 
-export default App;
+function Metric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: string;
+}) {
+  return (
+    <article className={`metric metric-${tone}`}>
+      <small>{label}</small>
+      <strong>{value}</strong>
+    </article>
+  );
+}
+
+export default function App() {
+  return (
+    <StoreProvider>
+      <Workbench />
+    </StoreProvider>
+  );
+}
